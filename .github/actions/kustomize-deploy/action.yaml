@@ -1,0 +1,81 @@
+name: Kustomize Deploy
+description: Authenticate to GCP and deploy a kustomize overlay
+
+inputs:
+  overlay:
+    description: Overlay name (dev, uat, production)
+    required: true
+  service_name:
+    description: Service name
+    required: true
+  image:
+    description: Full image path e.g. docker.io/user/service
+    required: true
+  sha:
+    description: Git SHA to deploy
+    required: true
+  gke_cluster:
+    description: GKE cluster name
+    required: true
+  gke_zone:
+    description: GKE zone
+    required: true
+  gke_workload_provider:
+    description: WIF provider
+    required: true
+  gke_sa:
+    description: GCP service account
+    required: true
+  project_id:
+    description: GCP project ID
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install kustomize
+      shell: bash
+      run: |
+        curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+        sudo mv kustomize /usr/local/bin/
+
+    - name: Authenticate to GCP
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ inputs.gke_workload_provider }}
+        service_account: ${{ inputs.gke_sa }}
+
+    - name: Set up gcloud
+      uses: google-github-actions/setup-gcloud@v2
+      with:
+        install_components: gke-gcloud-auth-plugin
+
+    - name: Deploy
+      shell: bash
+      run: |
+        gcloud container clusters get-credentials ${{ inputs.gke_cluster }} \
+          --zone ${{ inputs.gke_zone }} \
+          --project ${{ inputs.project_id }}
+
+        DEPLOYMENT_DIR="deploy/k8s/overlays/${{ inputs.overlay }}"
+        echo "→ Entering ${DEPLOYMENT_DIR}"
+        cd ${DEPLOYMENT_DIR}
+
+        IMAGE=${{ inputs.image }}:${{ inputs.sha }}
+        echo "→ Updating deployment image to ${IMAGE}"
+        kustomize edit set image ${IMAGE}
+
+        if [ "${{ inputs.branch }}" != "main" ]; then
+          echo "→ Feature branch detected, setting namesuffix to -${{ inputs.branch }}"
+          kustomize edit set namesuffix -- -${{ inputs.branch }}
+          DEPLOYMENT_NAME="${{ inputs.service_name }}-${{ inputs.branch }}"
+        else
+          echo "→ Main branch, deploying as ${{ inputs.service_name }}"
+          DEPLOYMENT_NAME="${{ inputs.service_name }}"
+        fi
+
+        echo "→ Applying kustomize overlay to ${{ inputs.overlay }}..."
+        kubectl apply -k .
+
+        echo "→ Monitoring rollout of ${DEPLOYMENT_NAME} in ${{ inputs.overlay }}..."
+        kubectl rollout status deployment/${DEPLOYMENT_NAME} -n ${{ inputs.overlay }}

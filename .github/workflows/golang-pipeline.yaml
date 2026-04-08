@@ -10,7 +10,13 @@ on:
         required: false
         type: string
         default: '1.26.2'
+      allow_feature_branch_deployment:
+        required: false
+        type: boolean
+        default: false
     secrets:
+      PROJECT_ID:
+        required: true
       DOCKER_USERNAME:
         required: true
       DOCKER_PASSWORD:
@@ -25,13 +31,13 @@ on:
         required: true
 
 jobs:
-  # ─── Setup: shared variables ───────────────────────────────
   setup:
     name: Setup
     runs-on: ubuntu-latest
     outputs:
       branch:    ${{ steps.vars.outputs.branch }}
       namespace: ${{ steps.vars.outputs.namespace }}
+      image_tag:  ${{ steps.vars.outputs.image_tag }}
     steps:
       - id: vars
         run: |
@@ -39,7 +45,12 @@ jobs:
           echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
           echo "namespace=${{ inputs.service_name }}-${BRANCH}" >> $GITHUB_OUTPUT
 
-  # ─── Stage 1: Verify ───────────────────────────────────────
+          if [ "${{ github.event_name }}" == "pull_request" ] || [ "${{ github.ref }}" != "refs/heads/main" ]; then
+          echo "image_tag=branch_${BRANCH}" >> $GITHUB_OUTPUT
+          else
+            echo "image_tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+
   verify:
     name: Verify
     needs: setup
@@ -64,26 +75,9 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
-  # ─── Stage 2: Build ────────────────────────────────────────
-  build:
-    name: Build
-    needs: [setup, verify]
-    if: github.event.action != 'closed'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build image
-        run: |
-          IMAGE=docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.service_name }}
-          podman build \
-            -t ${IMAGE}:${{ github.sha }} \
-            -f build/Dockerfile .
-
-  # ─── Stage 3: Publish ──────────────────────────────────────
   publish:
     name: Publish
-    needs: [setup, build]
+    needs: [setup, verify]
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     steps:
@@ -99,26 +93,15 @@ jobs:
       - name: Build and push
         run: |
           IMAGE=docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.service_name }}
-          BRANCH=branch_${{ needs.setup.outputs.branch }}
+          TAG=${{ needs.setup.outputs.image_tag }}
 
-          if [ "${{ github.event_name }}" == "pull_request" ]; then
-            podman build -t ${IMAGE}:${BRANCH} -f build/Dockerfile .
-            podman push ${IMAGE}:${BRANCH}
-          else
-            podman build \
-              -t ${IMAGE}:${{ github.sha }} \
-              -t ${IMAGE}:latest \
-              -f build/Dockerfile .
-            podman push ${IMAGE}:${{ github.sha }}
-            podman push ${IMAGE}:latest
-          fi
+          podman build -t ${IMAGE}:${TAG} -f build/Dockerfile .
+          podman push ${IMAGE}:${TAG}
 
-
-  # ─── Stage 6: Deploy DEV (main only) ───────────────────────
   deploy-dev:
     name: Deploy DEV
     needs: [setup, publish]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.allow_feature_branch_deployment == true
     runs-on: ubuntu-latest
     environment: dev
     permissions:
@@ -126,36 +109,23 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-
-      - name: Authenticate to GCP
-        uses: google-github-actions/auth@v2
+      - uses: mpandouris/platform/.github/actions/kustomize-deploy@stable
         with:
-          workload_identity_provider: ${{ secrets.GKE_WORKLOAD_PROVIDER }}
-          service_account: ${{ secrets.GKE_SA }}
+          overlay: dev
+          service_name: ${{ inputs.service_name }}
+          branch: ${{ needs.setup.outputs.branch }}
+          image: docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.service_name }}
+          sha: ${{ needs.setup.outputs.image_tag }}
+          gke_cluster: ${{ secrets.GKE_CLUSTER }}
+          gke_zone: ${{ secrets.GKE_ZONE }}
+          gke_workload_provider: ${{ secrets.GKE_WORKLOAD_PROVIDER }}
+          gke_sa: ${{ secrets.GKE_SA }}
+          project_id: ${{ secrets.PROJECT_ID }}
 
-      - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          install_components: gke-gcloud-auth-plugin
-
-      - name: Deploy to DEV
-        run: |
-          IMAGE=docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.service_name }}
-
-          gcloud container clusters get-credentials ${{ secrets.GKE_CLUSTER }} \
-            --zone ${{ secrets.GKE_ZONE }} --project ${{ secrets.PROJECT_ID }}
-
-          kubectl apply -f deploy/k8s/ -n dev
-
-          kubectl set image deployment/${{ inputs.service_name }} ${{ inputs.service_name }}=${IMAGE}:${{ github.sha }} -n dev
-
-          kubectl rollout status deployment/${{ inputs.service_name }} -n dev
-
-  # ─── Stage 7: Deploy UAT (main only) ───────────────────────
   deploy-uat:
     name: Deploy UAT
     needs: [setup, deploy-dev]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.allow_feature_branch_deployment == true
     runs-on: ubuntu-latest
     environment: uat
     permissions:
@@ -163,34 +133,19 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-
-      - name: Authenticate to GCP
-        uses: google-github-actions/auth@v2
+      - uses: mpandouris/platform/.github/actions/kustomize-deploy@stable
         with:
-          workload_identity_provider: ${{ secrets.GKE_WORKLOAD_PROVIDER }}
-          service_account: ${{ secrets.GKE_SA }}
+          overlay: uat
+          service_name: ${{ inputs.service_name }}
+          branch: ${{ needs.setup.outputs.branch }}
+          image: docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.service_name }}
+          sha: ${{ needs.setup.outputs.image_tag }}
+          gke_cluster: ${{ secrets.GKE_CLUSTER }}
+          gke_zone: ${{ secrets.GKE_ZONE }}
+          gke_workload_provider: ${{ secrets.GKE_WORKLOAD_PROVIDER }}
+          gke_sa: ${{ secrets.GKE_SA }}
+          project_id: ${{ secrets.PROJECT_ID }}
 
-      - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          install_components: gke-gcloud-auth-plugin
-
-      - name: Deploy to UAT
-        run: |
-          IMAGE=docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.service_name }}
-
-          gcloud container clusters get-credentials ${{ secrets.GKE_CLUSTER }} \
-            --zone ${{ secrets.GKE_ZONE }} --project ${{ secrets.PROJECT_ID }}
-
-          kubectl apply -f deploy/k8s/ -n uat
-
-          kubectl set image deployment/${{ inputs.service_name }} \
-            ${{ inputs.service_name }}=${IMAGE}:${{ github.sha }} \
-            -n uat
-
-          kubectl rollout status deployment/${{ inputs.service_name }} -n uat
-
-  # ─── Stage 8: Deploy Production (main only) ────────────────
   deploy-production:
     name: Deploy Production
     needs: [setup, deploy-uat]
@@ -202,6 +157,29 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+      - uses: mpandouris/platform/.github/actions/kustomize-deploy@stable
+        with:
+          overlay: production
+          service_name: ${{ inputs.service_name }}
+          branch: ${{ needs.setup.outputs.branch }}
+          image: docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.service_name }}
+          sha: ${{ needs.setup.outputs.image_tag }}
+          gke_cluster: ${{ secrets.GKE_CLUSTER }}
+          gke_zone: ${{ secrets.GKE_ZONE }}
+          gke_workload_provider: ${{ secrets.GKE_WORKLOAD_PROVIDER }}
+          gke_sa: ${{ secrets.GKE_SA }}
+          project_id: ${{ secrets.PROJECT_ID }}
+  
+  cleanup:
+    name: Cleanup Feature Branch
+    needs: [setup]
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && needs.setup.outputs.branch != 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
@@ -214,17 +192,23 @@ jobs:
         with:
           install_components: gke-gcloud-auth-plugin
 
-      - name: Deploy to Production
+      - name: Cleanup branch deployments
         run: |
-          IMAGE=docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.service_name }}
+          BRANCH=${{ needs.setup.outputs.branch }}
+          SUFFIX="-${BRANCH}"
 
           gcloud container clusters get-credentials ${{ secrets.GKE_CLUSTER }} \
-            --zone ${{ secrets.GKE_ZONE }} --project ${{ secrets.PROJECT_ID }}
+            --zone ${{ secrets.GKE_ZONE }} \
+            --project ${{ secrets.PROJECT_ID }}
 
-          kubectl apply -f deploy/k8s/ -n production
+          for NS in dev uat; do
+            echo "→ Cleaning up ${{ inputs.service_name }}${SUFFIX} in ${NS}..."
 
-          kubectl set image deployment/${{ inputs.service_name }} \
-            ${{ inputs.service_name }}=${IMAGE}:${{ github.sha }} \
-            -n production
-
-          kubectl rollout status deployment/${{ inputs.service_name }} -n production
+            if kubectl get deployment ${{ inputs.service_name }}${SUFFIX} -n ${NS} &>/dev/null; then
+              kubectl delete deployment ${{ inputs.service_name }}${SUFFIX} -n ${NS}
+              kubectl delete service ${{ inputs.service_name }}${SUFFIX} -n ${NS} --ignore-not-found
+              echo "✔ Removed ${{ inputs.service_name }}${SUFFIX} from ${NS}"
+            else
+              echo "→ No deployment found in ${NS}, skipping"
+            fi
+          done
