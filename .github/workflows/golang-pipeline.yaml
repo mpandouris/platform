@@ -74,7 +74,7 @@ jobs:
     name: Version
     needs: [verify]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: mpandouris/platform/.github/workflows/shared/api_version.yaml@stable
+    uses: mpandouris/platform/.github/workflows/api_version.yaml@stable
     secrets: inherit
 
   publish:
@@ -108,7 +108,7 @@ jobs:
     name: Deploy DEV
     needs: [setup, publish]
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.allow_feature_branch_deployment == true
-    uses: mpandouris/platform/.github/workflows/golang/_deploy.yaml@stable
+    uses: mpandouris/platform/.github/workflows/_deploy.yaml@stable
     with:
       environment: dev
       service_name: ${{ inputs.service_name }}
@@ -120,7 +120,7 @@ jobs:
     name: Deploy UAT
     needs: [setup, deploy-dev]
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.allow_feature_branch_deployment == true
-    uses: mpandouris/platform/.github/workflows/golang/_deploy.yaml@stable
+    uses: mpandouris/platform/.github/workflows/_deploy.yaml@stable
     with:
       environment: uat
       service_name: ${{ inputs.service_name }}
@@ -132,7 +132,7 @@ jobs:
     name: Deploy Production
     needs: [setup, deploy-uat]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: mpandouris/platform/.github/workflows/golang/_deploy.yaml@stable
+    uses: mpandouris/platform/.github/workflows/_deploy.yaml@stable
     with:
       environment: production
       service_name: ${{ inputs.service_name }}

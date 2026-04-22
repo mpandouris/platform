@@ -33,7 +33,7 @@ jobs:
     name: Version
     needs: [validate]
     if: github.event_name == 'workflow_dispatch'
-    uses: ./.github/workflows/shared/api_version.yaml
+    uses: mpandouris/platform/.github/workflows/api_version.yaml@main
     with:
       bump_type: ${{ inputs.bump_type }}
     permissions:
@@ -43,7 +43,7 @@ jobs:
     name: Changelog
     needs: [version]
     if: github.event_name == 'workflow_dispatch'
-    uses: ./.github/workflows/shared/_changelog.yaml
+    uses: mpandouris/platform/.github/workflows/_changelog.yaml@main
     with:
       tag: ${{ needs.version.outputs.new_version }}
     permissions:
@@ -53,6 +53,6 @@ jobs:
     name: Tag stable
     needs: [changelog]
     if: github.event_name == 'workflow_dispatch'
-    uses: ./.github/workflows/shared/tag_stable.yaml
+    uses: mpandouris/platform/.github/workflows/tag_stable.yaml@main
     permissions:
       contents: write
