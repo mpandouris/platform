@@ -46,7 +46,7 @@ jobs:
           echo "namespace=${{ inputs.service_name }}-${BRANCH}" >> $GITHUB_OUTPUT
 
           if [ "${{ github.event_name }}" == "pull_request" ] || [ "${{ github.ref }}" != "refs/heads/main" ]; then
-          echo "image_tag=branch_${BRANCH}" >> $GITHUB_OUTPUT
+            echo "image_tag=branch_${BRANCH}" >> $GITHUB_OUTPUT
           else
             echo "image_tag=${{ github.sha }}" >> $GITHUB_OUTPUT
           fi
@@ -170,6 +170,38 @@ jobs:
           gke_sa: ${{ secrets.GKE_SA }}
           project_id: ${{ secrets.PROJECT_ID }}
   
+  version:
+    name: Version
+    needs: [deploy-production]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: mpandouris/platform/.github/workflows/shared/api_version.yaml@stable
+    secrets: inherit
+
+  changelog:
+    name: Changelog
+    needs: [version]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: mpandouris/platform/.github/workflows/shared/_changelog.yaml@stable
+    with:
+      tag: ${{ needs.version.outputs.new_version }}
+    secrets: inherit
+
+  tag-stable:
+    name: Tag stable
+    needs: [changelog]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Move stable tag
+        run: |
+          git config user.name  "github-actions"
+          git config user.email "github-actions@github.com"
+          git tag -f stable
+          git push origin stable --force
+
   cleanup:
     name: Cleanup Feature Branch
     needs: [setup]

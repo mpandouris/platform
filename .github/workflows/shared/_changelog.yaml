@@ -1,0 +1,79 @@
+name: Changelog
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'The version tag to generate the changelog entry for (e.g. v1.2.3)'
+        required: false
+        type: string
+
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to generate changelog entry for (leave empty to use latest tag)'
+        required: false
+        type: string
+
+jobs:
+  changelog:
+    name: Generate Changelog
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch all tags
+        run: git fetch --tags
+
+      - name: Use platform cliff.toml if none present
+        run: |
+          if [ ! -f cliff.toml ]; then
+            curl -sSfL \
+              "https://raw.githubusercontent.com/mpandouris/platform/stable/cliff.toml" \
+              -o cliff.toml
+          fi
+
+      - name: Install git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      - name: Resolve target tag
+        id: resolve
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          fi
+          if [ -z "$TAG" ]; then
+            echo "No semver tag found — nothing to generate." >&2
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog entry for ${{ steps.resolve.outputs.tag }}
+        run: |
+          TAG="${{ steps.resolve.outputs.tag }}"
+          # --latest generates only the section for the most recent tag,
+          # --prepend adds it to the top of CHANGELOG.md without touching
+          # the existing history beneath it.
+          if [ -f CHANGELOG.md ]; then
+            git-cliff --latest --prepend CHANGELOG.md
+          else
+            git-cliff --output CHANGELOG.md
+          fi
+
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions"
+          git config user.email "github-actions@github.com"
+          git add CHANGELOG.md
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update CHANGELOG.md for ${{ steps.resolve.outputs.tag }} [skip ci]"
+            git push
+          fi
