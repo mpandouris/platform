@@ -1,0 +1,20 @@
+name: Tag Stable
+
+on:
+  workflow_call:
+
+jobs:
+  tag-stable:
+    name: Tag stable
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Move stable tag
+        run: |
+          git config user.name  "github-actions"
+          git config user.email "github-actions@github.com"
+          git tag -f stable
+          git push origin stable --force

@@ -1,0 +1,67 @@
+name: Platform CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Version bump type'
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    if: github.event.action != 'closed'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Lint GitHub Actions workflows
+        uses: rhysd/actionlint@v1.7.12
+
+  version:
+    name: Version
+    needs: [validate]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    uses: mpandouris/platform/.github/workflows/api_version.yaml@main
+    with:
+      bump_type: ${{ inputs.bump_type || 'auto' }}
+    permissions:
+      contents: write
+
+  changelog:
+    name: Changelog
+    needs: [version]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    uses: mpandouris/platform/.github/workflows/_changelog.yaml@main
+    with:
+      tag: ${{ needs.version.outputs.new_version }}
+    permissions:
+      contents: write
+
+  stable-gate:
+    name: Approve Stable
+    needs: [changelog]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    environment: stable
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Stable promotion approved"
+
+  tag-stable:
+    name: Tag stable
+    needs: [stable-gate]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    uses: mpandouris/platform/.github/workflows/tag_stable.yaml@main
+    permissions:
+      contents: write

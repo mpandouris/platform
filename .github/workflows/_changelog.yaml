@@ -23,7 +23,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -58,10 +58,6 @@ jobs:
 
       - name: Generate changelog entry for ${{ steps.resolve.outputs.tag }}
         run: |
-          TAG="${{ steps.resolve.outputs.tag }}"
-          # --latest generates only the section for the most recent tag,
-          # --prepend adds it to the top of CHANGELOG.md without touching
-          # the existing history beneath it.
           if [ -f CHANGELOG.md ]; then
             git-cliff --latest --prepend CHANGELOG.md
           else
