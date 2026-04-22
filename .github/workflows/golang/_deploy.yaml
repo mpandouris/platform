@@ -1,0 +1,73 @@
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      service_name:
+        required: true
+        type: string
+      image_tag:
+        required: true
+        type: string
+      branch:
+        required: false
+        type: string
+        default: main
+    secrets:
+      PROJECT_ID:          { required: true }
+      DOCKER_USERNAME:     { required: true }
+      GKE_CLUSTER:         { required: true }
+      GKE_ZONE:            { required: true }
+      GKE_WORKLOAD_PROVIDER: { required: true }
+      GKE_SA:              { required: true }
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - dev
+          - uat
+          - production
+      service_name:
+        description: Service name
+        required: true
+        type: string
+      image_tag:
+        description: Image tag to deploy (e.g. v1.2.3 or branch_feat-xyz)
+        required: true
+        type: string
+      branch:
+        description: Branch suffix for feature deployments
+        required: false
+        type: string
+        default: main
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mpandouris/platform/.github/actions/kustomize-deploy@stable
+        with:
+          overlay:               ${{ inputs.environment }}
+          service_name:          ${{ inputs.service_name }}
+          branch:                ${{ inputs.branch }}
+          image:                 docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.service_name }}
+          sha:                   ${{ inputs.image_tag }}
+          gke_cluster:           ${{ secrets.GKE_CLUSTER }}
+          gke_zone:              ${{ secrets.GKE_ZONE }}
+          gke_workload_provider: ${{ secrets.GKE_WORKLOAD_PROVIDER }}
+          gke_sa:                ${{ secrets.GKE_SA }}
+          project_id:            ${{ secrets.PROJECT_ID }}

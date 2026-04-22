@@ -1,0 +1,58 @@
+name: Platform CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Version bump type'
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    if: github.event.action != 'closed'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint GitHub Actions workflows
+        uses: rhysd/actionlint@v1
+
+  version:
+    name: Version
+    needs: [validate]
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/shared/api_version.yaml
+    with:
+      bump_type: ${{ inputs.bump_type }}
+    permissions:
+      contents: write
+
+  changelog:
+    name: Changelog
+    needs: [version]
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/shared/_changelog.yaml
+    with:
+      tag: ${{ needs.version.outputs.new_version }}
+    permissions:
+      contents: write
+
+  tag-stable:
+    name: Tag stable
+    needs: [changelog]
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/shared/tag_stable.yaml
+    permissions:
+      contents: write

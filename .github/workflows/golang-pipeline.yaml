@@ -37,19 +37,14 @@ jobs:
     outputs:
       branch:    ${{ steps.vars.outputs.branch }}
       namespace: ${{ steps.vars.outputs.namespace }}
-      image_tag:  ${{ steps.vars.outputs.image_tag }}
+      image_tag: ${{ steps.vars.outputs.image_tag }}
     steps:
       - id: vars
         run: |
           BRANCH=$(echo "${{ github.head_ref || github.ref_name }}" | sed 's/[^a-zA-Z0-9._-]/-/g')
           echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
           echo "namespace=${{ inputs.service_name }}-${BRANCH}" >> $GITHUB_OUTPUT
-
-          if [ "${{ github.event_name }}" == "pull_request" ] || [ "${{ github.ref }}" != "refs/heads/main" ]; then
-            echo "image_tag=branch_${BRANCH}" >> $GITHUB_OUTPUT
-          else
-            echo "image_tag=${{ github.sha }}" >> $GITHUB_OUTPUT
-          fi
+          echo "image_tag=branch_${BRANCH}" >> $GITHUB_OUTPUT
 
   verify:
     name: Verify
@@ -75,11 +70,20 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
+  version:
+    name: Version
+    needs: [verify]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: mpandouris/platform/.github/workflows/shared/api_version.yaml@stable
+    secrets: inherit
+
   publish:
     name: Publish
-    needs: [setup, verify]
-    if: github.event.action != 'closed'
+    needs: [setup, verify, version]
+    if: always() && needs.verify.result == 'success' && github.event.action != 'closed'
     runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.build.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -91,9 +95,11 @@ jobs:
             --password-stdin
 
       - name: Build and push
+        id: build
         run: |
           IMAGE=docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.service_name }}
-          TAG=${{ needs.setup.outputs.image_tag }}
+          TAG="${{ needs.version.outputs.new_version || needs.setup.outputs.image_tag }}"
+          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
 
           podman build -t ${IMAGE}:${TAG} -f build/Dockerfile .
           podman push ${IMAGE}:${TAG}
@@ -102,105 +108,37 @@ jobs:
     name: Deploy DEV
     needs: [setup, publish]
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.allow_feature_branch_deployment == true
-    runs-on: ubuntu-latest
-    environment: dev
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: mpandouris/platform/.github/actions/kustomize-deploy@stable
-        with:
-          overlay: dev
-          service_name: ${{ inputs.service_name }}
-          branch: ${{ needs.setup.outputs.branch }}
-          image: docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.service_name }}
-          sha: ${{ needs.setup.outputs.image_tag }}
-          gke_cluster: ${{ secrets.GKE_CLUSTER }}
-          gke_zone: ${{ secrets.GKE_ZONE }}
-          gke_workload_provider: ${{ secrets.GKE_WORKLOAD_PROVIDER }}
-          gke_sa: ${{ secrets.GKE_SA }}
-          project_id: ${{ secrets.PROJECT_ID }}
+    uses: mpandouris/platform/.github/workflows/golang/_deploy.yaml@stable
+    with:
+      environment: dev
+      service_name: ${{ inputs.service_name }}
+      image_tag:    ${{ needs.publish.outputs.image_tag }}
+      branch:       ${{ needs.setup.outputs.branch }}
+    secrets: inherit
 
   deploy-uat:
     name: Deploy UAT
     needs: [setup, deploy-dev]
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.allow_feature_branch_deployment == true
-    runs-on: ubuntu-latest
-    environment: uat
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: mpandouris/platform/.github/actions/kustomize-deploy@stable
-        with:
-          overlay: uat
-          service_name: ${{ inputs.service_name }}
-          branch: ${{ needs.setup.outputs.branch }}
-          image: docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.service_name }}
-          sha: ${{ needs.setup.outputs.image_tag }}
-          gke_cluster: ${{ secrets.GKE_CLUSTER }}
-          gke_zone: ${{ secrets.GKE_ZONE }}
-          gke_workload_provider: ${{ secrets.GKE_WORKLOAD_PROVIDER }}
-          gke_sa: ${{ secrets.GKE_SA }}
-          project_id: ${{ secrets.PROJECT_ID }}
+    uses: mpandouris/platform/.github/workflows/golang/_deploy.yaml@stable
+    with:
+      environment: uat
+      service_name: ${{ inputs.service_name }}
+      image_tag:    ${{ needs.publish.outputs.image_tag }}
+      branch:       ${{ needs.setup.outputs.branch }}
+    secrets: inherit
 
   deploy-production:
     name: Deploy Production
     needs: [setup, deploy-uat]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    environment: production
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: mpandouris/platform/.github/actions/kustomize-deploy@stable
-        with:
-          overlay: production
-          service_name: ${{ inputs.service_name }}
-          branch: ${{ needs.setup.outputs.branch }}
-          image: docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.service_name }}
-          sha: ${{ needs.setup.outputs.image_tag }}
-          gke_cluster: ${{ secrets.GKE_CLUSTER }}
-          gke_zone: ${{ secrets.GKE_ZONE }}
-          gke_workload_provider: ${{ secrets.GKE_WORKLOAD_PROVIDER }}
-          gke_sa: ${{ secrets.GKE_SA }}
-          project_id: ${{ secrets.PROJECT_ID }}
-  
-  version:
-    name: Version
-    needs: [deploy-production]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: mpandouris/platform/.github/workflows/shared/api_version.yaml@stable
-    secrets: inherit
-
-  changelog:
-    name: Changelog
-    needs: [version]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: mpandouris/platform/.github/workflows/shared/_changelog.yaml@stable
+    uses: mpandouris/platform/.github/workflows/golang/_deploy.yaml@stable
     with:
-      tag: ${{ needs.version.outputs.new_version }}
+      environment: production
+      service_name: ${{ inputs.service_name }}
+      image_tag:    ${{ needs.publish.outputs.image_tag }}
+      branch:       ${{ needs.setup.outputs.branch }}
     secrets: inherit
-
-  tag-stable:
-    name: Tag stable
-    needs: [changelog]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Move stable tag
-        run: |
-          git config user.name  "github-actions"
-          git config user.email "github-actions@github.com"
-          git tag -f stable
-          git push origin stable --force
 
   cleanup:
     name: Cleanup Feature Branch
