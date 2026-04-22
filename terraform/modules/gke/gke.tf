@@ -3,7 +3,7 @@ resource "google_container_cluster" "primary_cluster" {
   name     = "primary-cluster"
   location = var.zone
 
-  initial_node_count = 3
+  initial_node_count = 1
   project            = var.project_id
 
   # Optional for monitoring:
